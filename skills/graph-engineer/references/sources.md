@@ -21,13 +21,18 @@ design.
     delegates them to worker LLMs, and synthesizes their results."
   - Evaluator-optimizer: "one LLM call generates a response while another
     provides evaluation and feedback in a loop."
-  By default, this skill nests an Evaluator-Optimizer loop (Codex implements,
-  Codex critiques, Claude arbitrates) inside an Orchestrator-Workers structure
-  (the user/Claude session orchestrates, Codex is the default worker).
+  By default, this skill nests an Evaluator-Optimizer loop (OpenCode
+  implements, OpenCode critiques, Claude arbitrates) inside an
+  Orchestrator-Workers structure
+  (the user/Claude session orchestrates, OpenCode is the default worker).
+  `backend: codex` swaps OpenCode for Codex in that same loop shape; see
+  "OpenCode plugin provenance" below for why the two plugins are verified to
+  different standards in this file.
 - The **Codex plugin for Claude Code** is official and owned by OpenAI:
   [github.com/openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc),
   marketplace name `openai-codex`, plugin `codex`, author `OpenAI`. This
-  skill's autonomous cycle exclusively invokes `codex:codex-rescue`, the only
+  skill's `backend: codex` route exclusively invokes `codex:codex-rescue`, the
+  only
   plugin command without `disable-model-invocation`. The plugin also exposes
   `review`, `adversarial-review`, `status`, `result`, and `cancel` for
   human/manual use; this skill does not invoke those five programmatically and
@@ -46,11 +51,52 @@ design.
   third-party or plugin-provided namespace. This was session-surface
   inspection, not binary or source inspection.
 
+## OpenCode plugin provenance (default backend)
+
+**`opencode-plugin-cc` is a third-party community plugin, not an official
+one — unlike the Codex plugin above.** It ships from
+[github.com/tasict/opencode-plugin-cc](https://github.com/tasict/opencode-plugin-cc),
+an individual GitHub account, not from Anthropic, OpenAI, or the OpenCode
+project's own org. Its own README states it is "inspired by and pays homage
+to codex-plugin-cc by OpenAI" and that "the plugin architecture, command
+structure, and design patterns are derived from the original codex-plugin-cc
+project, adapted to work with OpenCode instead of Codex" — it is explicitly a
+community adaptation of the official design, not an official OpenCode
+integration. This skill still invokes it by the same exclusive-entry-point
+pattern as Codex — the autonomous cycle uses only
+`opencode:opencode-rescue`, the one plugin command without
+`disable-model-invocation` — but the plugin's own trustworthiness has a
+different provenance than Codex's, and this file has not verified its
+internals to the same standard (see Verification method below).
+
+Its command surface (`review`, `adversarial-review`, `rescue`, `status`,
+`result`, `cancel`, `setup`) was checked against that plugin's own README as
+fetched 2026-09-18, the same day this skill's default backend switched to
+`opencode`. This is weaker evidence than the Codex plugin's entry above,
+which was checked against plugin source and Claude Code CLI binary strings
+directly — see "Observed, but not independently verified" below for what
+that gap means in practice, and don't treat the command surface above as
+verified to the same standard as Codex's until someone re-checks it against
+the plugin's actual source (`opencode-companion.mjs` and its `lib/` modules,
+by direct analogy to how `codex-companion.mjs` was checked).
+
 ## Observed, but not independently verified for this skill's use case
 
 Real and not fabricated, but weaker evidence than the "What's official"
 entries above — don't treat these as validated for unattended `--write`
 work just because they exist.
+
+- **`opencode-plugin-cc`'s internal mechanics** (whether `--resume-last`
+  resolves by session recency only, like Codex's confirmed `sortJobsNewestFirst`
+  behavior, or supports something closer to resume-by-ID; whether its
+  `/opencode:review`/`/opencode:adversarial-review` read-only paths have any
+  enforcement beyond the prompt instruction; its exact HTTP/SSE session
+  lifecycle) have not been independently verified by reading its source, only
+  by reading its README and `agents/opencode-rescue.md` definition. Treat
+  every OpenCode-specific mechanical claim in `SKILL.md` and
+  `backend-selection.md` as carrying this same caveat until it is re-verified
+  against the plugin's actual `opencode-companion.mjs` source the way Codex's
+  `codex-companion.mjs` was.
 
 - **`/loop`** exists in at least some Claude Code environments as a way to
   keep a session running across turns, independent of `/goal`. This has
@@ -93,7 +139,8 @@ effective — that would overstate what a social-media post, however fully
 read, can establish. What's actually adopted here is narrower than and
 different from both posts' broader roadmaps: most of what they describe
 (parallel research fan-out, JS routers, per-node model staggering) does not
-apply to this skill's default single-Codex-worker design and was explicitly
+apply to this skill's default single-worker design (OpenCode by default, or
+`backend: codex`) and was explicitly
 rejected during the design discussion; only the "reviewer node with teeth, one
 agent writes" principle carried over, and even that was adopted with a
 **rejection** of the majority-vote survival rule both posts describe — see
@@ -111,6 +158,10 @@ agent writes" principle carried over, and even that was adopted with a
   command is `/codex:adversarial-review`.
 - The Codex plugin is not a community integration; be skeptical of any
   writeup claiming so — it ships from OpenAI's own GitHub org.
+- **The OpenCode plugin (`opencode-plugin-cc`) *is* a community
+  integration, unlike the Codex plugin above** — despite being this skill's
+  default backend as of 2026-09-18. It is not published by Anthropic, OpenAI,
+  or the OpenCode project. See "OpenCode plugin provenance" above.
 
 ## Adjacent but unrelated projects (don't confuse with this skill)
 
@@ -146,4 +197,15 @@ finishes *after* canonicalization from becoming the next "latest" thread —
 which is exactly the gap the barrier and late-lens rule exist to close.
 
 Verified against `openai-codex` plugin **v1.0.6** specifically (same pin as
-`README.md` and `skills/graph-engineer/SKILL.md`).
+`README.md` and `skills/graph-engineer/SKILL.md`, for the opt-in `backend:
+codex` route).
+
+**`opencode-plugin-cc` has received no equivalent source-level verification.**
+Its command surface and mechanics were read from its README and
+`agents/opencode-rescue.md` as fetched 2026-09-18, not from grepping its
+actual script source the way `codex-companion.mjs` was. No specific
+`opencode-plugin-cc` version is pinned or verified — check
+`/opencode:setup`'s reported version after installing and treat the
+`--resume-last`/`--fresh` and read-only-is-prompt-only claims throughout this
+skill as unverified against that specific version until someone repeats the
+Codex-style source audit against it.

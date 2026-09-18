@@ -1,21 +1,21 @@
 ---
 name: graph-engineer
 description: >-
-  Orchestrates a Claude↔Codex cycle where Claude Code designs the contract and arbitrates, while Codex by default (via the official openai/codex-plugin-cc plugin) writes, adversarially reviews, and fixes the code — the orchestrating Claude never edits implementation files. A per-cycle backend directive can opt into Claude workers instead without changing the Codex default. Use when the user asks to "implement with Codex", "have Codex review and fix", "peer review with Codex", "graph engineering", "orchestrator-workers with Codex", or wants an autonomous Claude+Codex implement→review→debate→refactor loop. (ES triggers: "implementar con Codex", "que Codex revise y corrija", "peer review con Codex", "graph engineering", "orchestrator-workers con Codex")
+  Orchestrates a Claude↔OpenCode cycle where Claude Code designs the contract and arbitrates, while OpenCode by default (via the third-party tasict/opencode-plugin-cc plugin) writes, adversarially reviews, and fixes the code — the orchestrating Claude never edits implementation files. A per-cycle backend directive can opt into Codex or Claude workers instead without changing the OpenCode default. Use when the user asks to "implement with OpenCode", "have OpenCode review and fix", "peer review with OpenCode", "graph engineering", "orchestrator-workers with OpenCode", or wants an autonomous Claude+OpenCode implement→review→debate→refactor loop. (ES triggers: "implementar con OpenCode", "que OpenCode revise y corrija", "peer review con OpenCode", "graph engineering", "orchestrator-workers con OpenCode")
 ---
 
 # Graph Engineer
 
 An **Evaluator-Optimizer** cycle (an official Anthropic pattern, see
 `references/sources.md`) nested inside an **Orchestrator-Workers** pattern:
-the user is the orchestrator, Claude is the sub-orchestrator, and Codex is by
-default both the worker that implements and the evaluator that critiques. The
-hard rule across the whole flow: **the orchestrating Claude never edits
+the user is the orchestrator, Claude is the sub-orchestrator, and OpenCode is
+by default both the worker that implements and the evaluator that critiques.
+The hard rule across the whole flow: **the orchestrating Claude never edits
 implementation files** with Edit/Write — the writer selected during
-PRE-FLIGHT does. That writer is unconditionally Codex, via the
-`codex:codex-rescue` subagent, unless the user explicitly opts into a Claude
-backend for that cycle. This is what keeps the writer and arbiter roles
-explicit.
+PRE-FLIGHT does. That writer is OpenCode by default, via the
+`opencode:opencode-rescue` subagent, unless the user explicitly opts into a
+Codex or Claude backend for that cycle. This is what keeps the writer and
+arbiter roles explicit.
 
 This split has three independent motivations:
 
@@ -29,82 +29,119 @@ This split has three independent motivations:
    [Agentic Design Patterns — Reflection](https://www.deeplearning.ai/the-batch/agentic-design-patterns-part-2-reflection/).
    Use Claude's DEBATE arbitration to put a different model in the decision
    path. Preserve the limitation below: IMPL and CRITIQUE still share the
-   same Codex model, so this is mitigation, not independent verification.
-3. **Specialize by role.** Use Codex for applying code because it is good at
-   that work, independent of cost; use its adversarial pass to challenge the
-   result; use Claude for contract ownership and evidence-based arbitration.
-   Do not reduce the design to "Codex always implements because it saves
-   tokens."
+   same OpenCode-routed model, so this is mitigation, not independent
+   verification.
+3. **Specialize by role.** Use OpenCode for applying code because it is good
+   at that work, independent of cost; use its adversarial pass to challenge
+   the result; use Claude for contract ownership and evidence-based
+   arbitration. Do not reduce the design to "OpenCode always implements
+   because it saves tokens."
 
 Don't confuse this with "graph engineering" as a marketing term — it is not
 an official Anthropic or OpenAI feature. This skill is a concrete pattern
-built on top of real installed pieces: the official OpenAI `codex` plugin and
-Claude Code's built-in `/goal` stop-gate.
+built on top of real installed pieces: the third-party `opencode-plugin-cc`
+plugin (a community adapter modeled on OpenAI's official `codex-plugin-cc`,
+not itself shipped by Anthropic, OpenAI, or the OpenCode project) and Claude
+Code's built-in `/goal` stop-gate. Unlike the Codex plugin (official, OpenAI's
+own GitHub org), `opencode-plugin-cc` is community-maintained
+(`github.com/tasict/opencode-plugin-cc`) — see `references/sources.md` for
+why that provenance difference matters and what it does and doesn't imply
+about trust.
 
 ## Prerequisite
 
-When PRE-FLIGHT resolves the default `codex` backend, the official OpenAI
-Codex plugin for Claude Code must be installed and authenticated:
-[openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
+When PRE-FLIGHT resolves the default `opencode` backend, the third-party
+`opencode-plugin-cc` plugin for Claude Code must be installed, and OpenCode
+itself (the underlying CLI/binary the plugin drives) must be installed and
+have a configured AI provider:
+[tasict/opencode-plugin-cc](https://github.com/tasict/opencode-plugin-cc).
 
 ```
-/plugin marketplace add openai/codex-plugin-cc
-/plugin install codex@openai-codex
-/codex:setup
+# 1. Install OpenCode itself (once), if not already present
+npm i -g opencode-ai   # or: brew install opencode
+
+# 2. Install the plugin
+! curl -fsSL https://raw.githubusercontent.com/tasict/opencode-plugin-cc/main/install.sh | bash
+/reload-plugins
+/opencode:setup
+
+# 3. Configure an AI provider for OpenCode, if not already done
+! opencode providers login
 ```
 
-`/codex:setup` should report `Status: ready`. If it doesn't, stop and tell the
-user to fix their Codex setup — this skill doesn't try to diagnose plugin
-installation problems. `backend: claude`,
+`/opencode:setup` should report a ready status. If it doesn't, stop and tell
+the user to fix their OpenCode setup — this skill doesn't try to diagnose
+plugin installation problems. `backend: codex`, `backend: claude`,
 `backend: claude:<account-alias>`, and
-`backend: claude-writer:<account-alias>` do not require the Codex plugin
+`backend: claude-writer:<account-alias>` do not require the OpenCode plugin
 because those routes never call it, but PRE-FLIGHT backend resolution and
-every other applicable skill invariant still apply.
+every other applicable skill invariant still apply. `backend: codex` instead
+requires the official Codex plugin — see `references/backend-selection.md`'s
+`codex` subsection for its own prerequisite block.
 
-**Tested against `openai-codex` plugin v1.0.6.** The routing assumptions in
-this skill (single `codex:codex-rescue` entry point, `--write`/`--resume-last`
-flag behavior, the sandbox enforcement described under CRITIQUE below) were
-verified against that version. A future plugin update that changes the
-command surface or flag semantics could silently break these assumptions —
-if the cycle starts behaving unexpectedly, check the installed plugin
-version first.
+**Routing assumptions unverified against a pinned `opencode-plugin-cc`
+version.** Unlike the Codex path (tested and pinned against `openai-codex`
+v1.0.6, with its `--resume-last` recency semantics verified directly against
+plugin source — see `references/sources.md`), this skill's OpenCode routing
+assumptions (the `opencode:opencode-rescue` entry point, `--write`/
+`--resume-last`/`--fresh` flag behavior) are drawn from that plugin's README
+and agent definition as fetched 2026-09-18, not from an equivalent source-level
+audit of `opencode-companion.mjs`, and no specific plugin version has been
+pinned or tested end-to-end yet. In particular, whether `--resume-last`
+resolves purely by session recency (like Codex) or supports something closer
+to resume-by-ID has not been independently confirmed — treat it as the same
+recency-only limitation as Codex until someone verifies otherwise against the
+installed plugin's own source. Spot-check `/opencode:setup`'s reported plugin
+version after install, and re-verify the flag/routing assumptions below
+against it before relying on this skill for unattended `--write` work.
 
-## Single Codex entry point: `codex:codex-rescue`
+## Single default entry point: `opencode:opencode-rescue`
 
-Every interaction with Codex in this cycle goes through one subagent:
+Every interaction with the default OpenCode backend in this cycle goes
+through one subagent:
 
 ```
-Agent(subagent_type: "codex:codex-rescue", prompt: "...")
+Agent(subagent_type: "opencode:opencode-rescue", prompt: "...")
 ```
 
-It's the only Codex plugin command without `disable-model-invocation`, so
-it's the only one callable directly by the model — `/codex:review`,
-`/codex:adversarial-review`, `/codex:status`, `/codex:result`, and
-`/codex:cancel` are typed-by-human-only and out of scope for an autonomous
+It's the only OpenCode plugin command without `disable-model-invocation`, so
+it's the only one callable directly by the model — `/opencode:review`,
+`/opencode:adversarial-review`, `/opencode:status`, `/opencode:result`, and
+`/opencode:cancel` are typed-by-human-only and out of scope for an autonomous
 cycle. The subagent itself supports read-only runs: per its own definition,
-it defaults to `--write` "unless the user explicitly asks for read-only
-behavior or only wants review, diagnosis, or research without edits" — so the
-CRITIQUE node below is just the same subagent invoked without `--write` and
-with adversarial framing in the prompt, not a different mechanism.
+it defaults to write-capable OpenCode work "unless the user explicitly asks
+for read-only behavior" — so the CRITIQUE node below is just the same
+subagent invoked without `--write` and with adversarial framing in the
+prompt, not a different mechanism. **Unlike Codex, this is a prompt
+convention only — see the CRITIQUE node below for why that distinction
+matters.**
 
 (If the user prefers to drive a review by hand instead of through the cycle,
-`/codex:adversarial-review` can still be typed directly — it's just not part
-of what this skill automates.)
+`/opencode:adversarial-review` can still be typed directly — it's just not
+part of what this skill automates.)
+
+When `backend: codex` is selected instead, every invocation in this document
+that shows `Agent(subagent_type: "opencode:opencode-rescue", ...)` is
+replaced by `Agent(subagent_type: "codex:codex-rescue", ...)` following
+`references/backend-selection.md`'s `codex` subsection, which retains the
+original Codex-path mechanics (including its enforced sandbox and its own
+prerequisite block) essentially unchanged from before this skill's default
+backend changed.
 
 ## Selecting a mode
 
-Three entry paths exist. Pick one before starting — on the default `codex`
-path, the cheapest costs a single Codex call and is a complete answer for most
-review work.
+Three entry paths exist. Pick one before starting — on the default `opencode`
+path, the cheapest costs a single OpenCode call and is a complete answer for
+most review work.
 
 Both columns below are derived, not measured. **Floor** is a run where
 CRITIQUE finds nothing. **One-fix round** is a run where one finding is
 accepted, fixed, and re-reviewed once — the smallest run that actually does
 something. Real runs with several findings cost more.
 
-| Mode | Path | Standard Codex calls (floor / one-fix round) | Use when |
+| Mode | Path | Standard backend calls (floor / one-fix round) | Use when |
 |---|---|---|---|
-| **Review-only** | PRE-FLIGHT → CRITIQUE → DEBATE/report → DONE | 1 / 1 | You want an adversarial read of code that already exists. Authorizes no writes; only the default Codex path enforces that with a sandbox. |
+| **Review-only** | PRE-FLIGHT → CRITIQUE → DEBATE/report → DONE | 1 / 1 | You want an adversarial read of code that already exists. Authorizes no writes; only `backend: codex` enforces that with a real sandbox — the default `opencode` path enforces it only as a prompt convention (see CRITIQUE). |
 | **Refactor-only** | PRE-FLIGHT → CRITIQUE → DEBATE → REFACTOR → QUALITY GATE → CRITIQUE → … → DONE | 1 / 3 | Existing code needs fixing, with no new feature contract involved. |
 | **Full 8-node write cycle** | PRE-FLIGHT → SPEC → IMPL → … → VERIFY | 2 / 4 | New functionality that needs a contract written before the code exists. |
 
@@ -112,17 +149,17 @@ Review-only is 1 in both columns because it never refactors — it reports and
 stops. Refactor-only and the full cycle reach their one-fix number by adding
 REFACTOR plus the re-review CRITIQUE that follows it.
 
-On the default `codex` path, these counts are traced by node actor: IMPL,
-CRITIQUE, and REFACTOR are Codex calls, while PRE-FLIGHT, SPEC, QUALITY GATE,
-DEBATE, and VERIFY are Claude.
-QUALITY GATE only reaches Codex when a mechanical check fails, and DEBATE only
+On the default `opencode` path, these counts are traced by node actor: IMPL,
+CRITIQUE, and REFACTOR are OpenCode calls, while PRE-FLIGHT, SPEC, QUALITY
+GATE, DEBATE, and VERIFY are Claude.
+QUALITY GATE only reaches the writer backend when a mechanical check fails, and DEBATE only
 when a `debatable` finding is reinjected. Elevated assurance expands node 4 and
 adds exit-challenger passes — it does not multiply IMPL or REFACTOR — and its
 floors are much higher, belong to that mode alone, and are listed under Risks.
 
 Note that both write-authorized paths begin at PRE-FLIGHT for a reason: that
 is where the clean-tree and non-`main` branch checks happen. Refactor-only
-does not start by calling Codex.
+does not start by calling the writer backend.
 
 **When not to authorize a write cycle.** The entry question is blast radius,
 not whether a change is "structural" or "cosmetic". If a change alters no
@@ -178,15 +215,19 @@ PRE-FLIGHT (write-authorized) -> CRITIQUE (first pass, fresh thread, current tre
 
 **Elevated assurance** is an optional, opt-in variant of node 4 (CRITIQUE) —
 it does not add a node and the diagrams above stay exactly as written. On the
-default `codex` path, it replaces a single CRITIQUE call with an initial sweep
-of 3 independent fresh lenses plus a canonicalization call (still counted as
-one CRITIQUE pass), and gates entry to VERIFY (DONE in refactor-only) on a
-fresh "exit challenger" pass that reruns after any REFACTOR it itself triggers,
-until one pass finds nothing. `backend: claude` and
-`claude-writer:<account-alias>` instead use 3 parallel fresh `Explore` lenses
-and Claude's own canonicalization, with no separate canonicalization call,
-canonical thread, `--resume-last`, or Codex-call budget consumed;
-`claude:<account-alias>` is incompatible with elevated assurance:
+default `opencode` path and on `backend: codex` alike — both are
+**resume-based backends** that share the same `--resume-last`/`--fresh`
+flag shape and the same recency-only resume limitation (see the Prerequisite
+section's caution about unverified OpenCode routing assumptions) — it
+replaces a single CRITIQUE call with an initial sweep of 3 independent fresh
+lenses plus a canonicalization call (still counted as one CRITIQUE pass), and
+gates entry to VERIFY (DONE in refactor-only) on a fresh "exit challenger"
+pass that reruns after any REFACTOR it itself triggers, until one pass finds
+nothing. `backend: claude` and `claude-writer:<account-alias>` instead use 3
+parallel fresh `Explore` lenses and Claude's own canonicalization, with no
+separate canonicalization call, canonical thread, `--resume-last`, or
+resume-based-backend-call budget consumed; `claude:<account-alias>` is
+incompatible with elevated assurance:
 
 ```
 Elevated assurance expands node 4 only; the node count stays 8:
@@ -247,7 +288,8 @@ composite no-op record. Commit that bounded update only after its exact-path
 and staged-semantic checks pass; any HEAD, cleanliness, residue, or staged-diff
 mismatch stops and escalates. The canonical artifact digest remains an
 artifact-drift check for the reviewer paths defined by elevated assurance and
-non-Codex backend selection; it is not used for this no-op gate.
+backend selection for every backend other than `backend: codex` — including
+the default `opencode` path; it is not used for this no-op gate.
 
 Treat QUALITY GATE as a numbered invariant checkpoint, not a new actor or a
 fixed independent pipeline stage. Attach it as a capped retry edge to the
@@ -256,8 +298,9 @@ write-authorized modes, enforce this for CRITIQUE calls that follow an IMPL or
 REFACTOR write: **such a CRITIQUE call may run only after the tree has passed
 QUALITY GATE since that write or when a currently-valid persisted
 user-confirmed opt-out exists.** This invariant does not apply to review-only,
-which authorizes no writer and therefore has nothing to gate; non-Codex
-reviewer mutation risks and drift checks are defined in
+which authorizes no writer and therefore has nothing to gate; reviewer
+mutation risks and drift checks for every backend other than `backend: codex`
+(including the default `opencode` path) are defined in
 `references/backend-selection.md`. It also does not apply to refactor-only's
 first CRITIQUE, which precedes any IMPL or REFACTOR write.
 
@@ -277,7 +320,7 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    entry; it does not prohibit this cycle's deliberate context writes after the
    check. If either entry check fails, **abort with a clear message to the
    user** instead of proceeding — do not let the selected writer's edits,
-   including Codex's `--write` calls on the default path, land on top of
+   including OpenCode's `--write` calls on the default path, land on top of
    existing uncommitted work or directly on `main`. This is what makes
    the "always enter on a branch with a clean working tree" rule under Risks an
    enforced check instead of a hope. This lifecycle also requires at most one
@@ -287,15 +330,15 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    `references/context-lifecycle.md` rather than attempting implicit locking.
 
    **Backend resolution.** Resolve the `backend:` directive once per cycle
-   entry for every mode. The accepted values are `codex`, `claude`,
-   `claude:<account-alias>`, and `claude-writer:<account-alias>`; omission
-   always resolves to `codex`, without a prompt or inference. In review-only,
-   reject `claude-writer:<account-alias>` at PRE-FLIGHT because that mode has
-   no writer role; follow `references/backend-selection.md` for the rejection
-   mechanism. For write-authorized modes, persist the resolution under
-   `### Backend` in the
+   entry for every mode. The accepted values are `opencode`, `codex`,
+   `claude`, `claude:<account-alias>`, and `claude-writer:<account-alias>`;
+   omission always resolves to `opencode`, without a prompt or inference. In
+   review-only, reject `claude-writer:<account-alias>` at PRE-FLIGHT because
+   that mode has no writer role; follow `references/backend-selection.md` for
+   the rejection mechanism. For write-authorized modes, persist the
+   resolution under `### Backend` in the
    current feature's `PROJECT_CONTEXT.md` section before IMPL (or before
-   refactor-only's initial CRITIQUE). Every non-`codex` selection requires
+   refactor-only's initial CRITIQUE). Every non-`opencode` selection requires
    explicit user confirmation before the first dispatch; disclosure alone is
    not authorization. If confirmation is unavailable, including in an
    unattended `/goal` run, stop and escalate rather than adopting a directive
@@ -308,9 +351,22 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    assurance only with `claude:<account-alias>`;
    `claude-writer:<account-alias>` supports it because CRITIQUE stays local and
    can supply the same 3 fresh parallel `Explore` lenses as `backend: claude`.
-   When the backend is not `codex`, give every mandatory disclosure to the user
+   When the backend is `claude`, `claude:<account-alias>`, or
+   `claude-writer:<account-alias>`, give every mandatory disclosure defined in
+   `references/backend-selection.md` to the user
    in conversation before SPEC, or before the first dispatched node when the
-   selected mode has no SPEC. For an existing feature section, persist that
+   selected mode has no SPEC — these disclosures cover a real loss of
+   guarantees relative to the default (same-model writer/reviewer, ambient
+   tool authority, cross-session confidentiality). When the backend is
+   `codex`, confirmation before first dispatch is still required (it is a
+   non-default selection and must not be adopted silently from scanned text),
+   but no loss-of-guarantee disclosure applies — `backend: codex` trades the
+   default's provider flexibility and one-plugin-simplicity for a *stronger*
+   sandbox guarantee than the default, not a weaker one; see
+   `references/backend-selection.md`'s `codex` subsection for its own
+   informational note (Codex-account cost, its separate plugin prerequisite)
+   in place of a disclosure. For an existing feature section, persist any
+   required
    disclosure before SPEC. For a new full-cycle feature with no section yet,
    SPEC persists it during the same initial section-creation write as the
    contract—the earliest context write that is actually possible. In a mode
@@ -466,9 +522,9 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    `IMPL-r00` composite. Follow the lifecycle reference for the exact section
    shape, composite fields, checkpoint locator, and interruption handling.
 
-2. **IMPL** (selected backend writes; Codex by default) —
+2. **IMPL** (selected backend writes; OpenCode by default) —
    ```
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Implement the active
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Implement the active
    feature [feature]. Permitted context, extracted and fenced byte-for-byte
    from that feature's #### Current state per context-lifecycle.md:
    [raw Current state bytes extracted and fenced per context-lifecycle.md]
@@ -485,7 +541,7 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    defines the guarantee caveat, disclosure matrix, and composite-record rules.
 
    **Backend dispatch.** The invocation above is the unchanged default
-   `codex` path. For `claude`, `claude:<account-alias>`, or
+   `opencode` path. For `codex`, `claude`, `claude:<account-alias>`, or
    `claude-writer:<account-alias>`, dispatch the selected writer exactly as
    `references/backend-selection.md` specifies; do not inline or improvise
    substitute prompts here. The invariant is that the selected writer performs
@@ -534,12 +590,13 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
 
    **Checkpoint commit on a passing gate.** When PRE-FLIGHT authorized
    checkpoint commits (see node 0) and this run of QUALITY GATE passes,
-   Claude — never Codex — creates one local git commit for the tree QUALITY
-   GATE just approved, before CRITIQUE runs. This applies uniformly to the
-   gate pass that follows the initial IMPL (round `r00`) and to the gate pass
-   that follows every REFACTOR (`r01`, `r02`, …), since QUALITY GATE already
-   treats both writer calls the same way. Claude does this itself with
-   Bash/git rather than asking Codex, because REFACTOR does not yet know the
+   Claude — never the selected writer backend — creates one local git commit
+   for the tree QUALITY GATE just approved, before CRITIQUE runs. This applies
+   uniformly to the gate pass that follows the initial IMPL (round `r00`) and
+   to the gate pass that follows every REFACTOR (`r01`, `r02`, …), since
+   QUALITY GATE already treats both writer calls the same way. Claude does
+   this itself with Bash/git rather than asking the writer, because REFACTOR
+   does not yet know the
    gate's outcome when it runs, and pass/fail is Claude's own finding to act
    on. Inspect `git status --porcelain=v1 -uall`, then stage only the paths
    this cycle actually touched; never use `git add -A`/`git add .` blind, and
@@ -598,12 +655,14 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    the archive/pointer pair is inconsistent, do not partially archive; stop
    and escalate as that reference requires.
 
-4. **CRITIQUE** (selected backend critiques adversarially; Codex by default,
-   with sandbox-enforced no-write behavior only on that path) — On the default
-   Codex path, the first CRITIQUE call in a
+4. **CRITIQUE** (selected backend critiques adversarially; OpenCode by
+   default, with no-write behavior that is a prompt convention only on that
+   path — sandbox-enforced no-write behavior is available only via
+   `backend: codex`, see below) — On the default OpenCode path (and
+   identically on `backend: codex`), the first CRITIQUE call in a
    cycle starts a fresh thread. Every CRITIQUE call after that—including one
    reached from a VERIFY failure—must pass
-   `--resume-last`, so Codex retains memory of its own prior findings and of
+   `--resume-last`, so the reviewer retains memory of its own prior findings and of
    Claude's prior triage decisions, instead of restating findings that were
    already ruled debatable or false-positive. **This blanket rule has
    documented exceptions in elevated mode** — the initial 3 lens calls, the
@@ -615,7 +674,7 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    continuity summary described there:
    ```
    # First CRITIQUE of the cycle (fresh thread):
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Adversarially review
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Adversarially review
    the current implementation of the active feature [feature]. Permitted
    context, extracted and fenced byte-for-byte from its #### Current state per
    context-lifecycle.md:
@@ -625,7 +684,7 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    defects. Read-only: do not fix anything, just report findings.")
 
    # Every subsequent CRITIQUE call in the same cycle:
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Adversarially review
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Adversarially review
    the current implementation of the active feature [feature]. Permitted
    context, extracted and fenced byte-for-byte from its #### Current state per
    context-lifecycle.md:
@@ -641,14 +700,14 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    Read-only: do not fix anything, just report findings. --resume-last")
 
    # Review-only CRITIQUE (single fresh read-only thread):
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Adversarially review
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Adversarially review
    [scope] directly, applying these user-supplied criteria if any: [criteria].
    Do not require or assume a PROJECT_CONTEXT.md contract exists.
    Challenge the approach, design choices, and assumptions — don't just list
    defects. Read-only: do not fix anything, just report findings.")
 
    # Refactor-only, first CRITIQUE (fresh thread, no SPEC contract exists):
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Adversarially review
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Adversarially review
    [scope] for the active feature [feature] as it currently exists on disk.
    Permitted context, extracted and fenced byte-for-byte from its refactor-only
    #### Current state scope/criteria per context-lifecycle.md:
@@ -662,7 +721,7 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    # Refactor-only, every subsequent CRITIQUE (same continuity rules as the
    # full 8-node write cycle — --resume-last, plus the fresh-fallback
    # continuity summary if node 6 had to use it):
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Adversarially review
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Adversarially review
    [scope] for the active feature [feature] again now that the previously
    agreed fixes have been applied. Permitted context, extracted and fenced
    byte-for-byte from its refactor-only #### Current state per
@@ -687,33 +746,40 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    prompt placeholder means that exact extraction/serialization, not a
    blockquote. This narrows accidental
    disclosure but is instruction-based, not a sandboxed read boundary; resumed
-   Codex continuity comes from `--resume-last`, not from rereading the log. See
-   that reference for the complete caveat, node-specific rules, and composite
-   iteration recording.
+   reviewer continuity comes from `--resume-last`, not from rereading the log.
+   See that reference for the complete caveat, node-specific rules, and
+   composite iteration recording.
 
-   **Known `--resume-last` identity limitation.** The pinned plugin exposes no
-   resume-by-thread-ID; it selects by recency. Every resumed CRITIQUE,
+   **Known `--resume-last` identity limitation.** The pinned Codex plugin
+   exposes no resume-by-thread-ID; it selects by recency — verified directly
+   against that plugin's source (see `references/sources.md`). The OpenCode
+   plugin has not had the equivalent source-level audit yet (see
+   Prerequisite); treat it as having the same recency-only limitation until
+   proven otherwise. Every resumed CRITIQUE,
    DEBATE reinjection, and REFACTOR prompt must therefore name the active
    feature and say: "if your resumed session's own memory concerns a different
    feature than the one named here, stop and report that instead of
    proceeding." This mitigates but cannot eliminate misrouting outside elevated
-   fan-in's no-intervening-task barrier. It has occurred in practice: during
+   fan-in's no-intervening-task barrier. On Codex, it has occurred in practice: during
    the `project-context-scoped-disclosure` cycle, a `--resume-last --write`
    REFACTOR resolved to an unrelated already-cancelled session, apparently
    because cancellation refreshed that session's recency stamp.
 
    **Backend dispatch.** The invocations and `--resume-last` rules above are
-   the unchanged default `codex` path. For `claude`,
+   the unchanged default `opencode` path. For `codex`, `claude`,
    `claude:<account-alias>`, or `claude-writer:<account-alias>`, follow
    `references/backend-selection.md` in full for reviewer selection, manual
    continuity, the exact strength of the read-only guarantee, and the mandatory
-   before/after artifact-identity digest around every non-Codex reviewer call;
-   do not inline alternate prompt families here. Every backend must preserve
-   the adversarial scope, return findings before Claude triages them, and leave
-   valid/debatable/false-positive arbitration to node 5. A non-Codex review
-   must never be narrated as independent or cross-model review.
+   before/after artifact-identity digest around every reviewer call other than
+   `backend: codex`'s (that path alone has an enforced sandbox instead — see
+   below); do not inline alternate prompt families here. Every backend must
+   preserve the adversarial scope, return findings before Claude triages them,
+   and leave valid/debatable/false-positive arbitration to node 5. An OpenCode
+   or Claude review must never be narrated as independent or cross-model
+   review.
 
-   **Elevated assurance (opt-in variant).** On the default Codex path, when
+   **Elevated assurance (opt-in variant).** On resume-based backends (default
+   `opencode`, or `backend: codex`), when
    `### Critique assurance` in
    `PROJECT_CONTEXT.md` (or, in review-only, the user's explicit request)
    resolves to `mode: elevated`, the first CRITIQUE traversal of the cycle
@@ -722,27 +788,33 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    gates entry to VERIFY (or DONE in refactor-only) — rerun fresh after any
    REFACTOR the exit challenger itself triggers, until one pass finds no
    valid findings against the then-current artifact; see the pass-accounting
-   note under Anti-loop cutoff. Every later resumed Codex round in elevated
+   note under Anti-loop cutoff. Every later resumed round in elevated
    mode still uses `--resume-last` exactly as standard mode does. All
-   canonicalization-call, canonical-thread, `--resume-last`, and Codex-call-
-   budget mechanics in this paragraph apply only to the default `codex` path.
+   canonicalization-call, canonical-thread, `--resume-last`, and model-call-
+   budget mechanics in this paragraph apply only to resume-based backends
+   (default `opencode` or `backend: codex`).
    The same-session `claude` and cross-session-writer
    `claude-writer:<account-alias>` backends instead use 3 fresh parallel
    `Explore` lenses, Claude-maintained continuity, and Claude's own
    canonicalization, with no separate canonicalization call, canonical thread,
-   `--resume-last`, or Codex-call budget consumed; `claude:<account-alias>` is
+   `--resume-last`, or resume-based-backend-call budget consumed;
+   `claude:<account-alias>` is
    incompatible with elevated assurance. Follow
    `references/backend-selection.md` for those rules.
-   This is not a separate node — it is entirely a node 4 variant. On the
-   default `codex` path, follow `references/elevated-assurance.md` in full
-   before running it; it defines the Codex lens prompts, the mandatory fan-in
-   barrier (required specifically because the pinned plugin resolves
-   `--resume-last` by newest `updatedAt` with no resume-by-thread-ID), the
+   This is not a separate node — it is entirely a node 4 variant. On
+   resume-based backends, follow `references/elevated-assurance.md` in full
+   before running it; it defines the lens prompts (written for Codex and
+   reused as-is for OpenCode pending the source-level audit noted under
+   Prerequisite), the mandatory fan-in
+   barrier (required for Codex because the pinned plugin resolves
+   `--resume-last` by newest `updatedAt` with no resume-by-thread-ID; applied
+   to OpenCode as the conservative default until its own resolution order is
+   independently verified), the
    late-lens recovery rule, the normalized finding record, and the budgets.
    For `backend: claude` or `claude-writer:<account-alias>`, follow
    `references/backend-selection.md`'s replacement mechanics instead: 3
    parallel fresh `Explore` lenses, Claude's own canonicalization, and no
-   canonical thread, `--resume-last`, or Codex budget.
+   canonical thread, `--resume-last`, or resume-based-backend budget.
    In write-authorized modes, do not activate
    elevated mode without a persisted `### Critique assurance` resolution of
    `mode: elevated`. In review-only, require the user's explicit request to be
@@ -751,31 +823,48 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    Every elevated fresh lens and exit challenger reads `#### Current state`
    supplied inline and is instructed to exclude `#### Round log`; elevated
    resumed canonical rounds use the same prompt-level default and rely on
-   session continuity. This is not a sandbox-enforced read boundary. Follow
+   session continuity. This is not a sandbox-enforced read boundary on any
+   backend except `backend: codex`. Follow
    the disclosure rules in `references/context-lifecycle.md` in addition to
    the elevated mechanics above.
 
-   **On the default Codex path, read-only is enforced, not just requested.**
-   CRITIQUE's read-only
-   behavior isn't a soft prompt instruction Codex could ignore — the
+   **On `backend: codex`, read-only is enforced, not just requested. On the
+   default `opencode` path, it is not.** CRITIQUE's read-only
+   behavior under `backend: codex` isn't a soft prompt instruction Codex could
+   ignore — the
    underlying `codex-companion.mjs` script sets
    `sandbox: request.write ? "workspace-write" : "read-only"`. As long as the
    CRITIQUE invocation never includes `--write`, the sandbox itself blocks
    file edits at the OS/process level. This is a real guarantee for CRITIQUE
-   calls specifically; it says nothing about IMPL or REFACTOR, which
-   deliberately do pass `--write`.
+   calls specifically under that backend; it says nothing about IMPL or
+   REFACTOR, which deliberately do pass `--write` even there. **The default
+   `opencode` backend has no equivalent enforcement.** Its
+   `/opencode:review` and `/opencode:adversarial-review` commands — and the
+   `opencode:opencode-rescue` subagent invoked without `--write` — rely
+   entirely on the prompt instruction "read-only: do not fix anything, just
+   report findings." Nothing in the OpenCode plugin's read-only paths blocks
+   file edits at the OS/process level; a misbehaving or confused CRITIQUE call
+   could in principle write to the tree despite the instruction. This is the
+   single most consequential trade-off of making OpenCode the default backend
+   instead of Codex — weigh it explicitly before relying on this skill's
+   CRITIQUE step as a hard write-prevention boundary, and prefer `backend:
+   codex` for any cycle where that boundary matters more than avoiding the
+   Codex-specific prerequisite.
 
 5. **DEBATE / TRIAGE** (Claude, read-only, cheap) — Classify each finding:
    - **Valid** → goes to node 6 as-is.
    - **Debatable** → reinjected to the selected reviewer with the explicit
      counterargument ("The reviewer flagged X, but Y because Z — do you stand
-     by it or reconsider?"). On the default Codex path, always use
-     `codex:codex-rescue` with `--resume-last` and never `--write`, so the
+     by it or reconsider?"). On resume-based backends (default `opencode`, or
+     `backend: codex`), always use
+     the same entry-point subagent (`opencode:opencode-rescue` or
+     `codex:codex-rescue`) with `--resume-last` and never `--write`, so the
      reinjection stays on the same thread instead of becoming the "latest"
      session that a later REFACTOR's `--resume-last` might mistakenly resume.
      Name the active feature and include the resumed-memory mismatch stop
      instruction required in node 4.
-     Non-Codex backends use the continuity mechanism in
+     `claude`, `claude:<account-alias>`, and `claude-writer:<account-alias>`
+     use the continuity mechanism in
      `references/backend-selection.md`. Await the reply before deciding.
    - **False positive** → discarded, with one line of written justification
      (never silent acceptance or silent rejection).
@@ -824,8 +913,9 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    authority to edit implementation files.
 
    **Known limitation — same-model self-preference bias.** On the default
-   `codex` path, CRITIQUE and IMPL both run on Codex, the same underlying
-   model. That means CRITIQUE is not a fully independent adversarial reviewer
+   `opencode` path (and identically on `backend: codex`), CRITIQUE and IMPL
+   both run on the same underlying writer/reviewer backend. That means
+   CRITIQUE is not a fully independent adversarial reviewer
    — it inherits whatever blind spots or self-preference bias the model has
    about its own prior output. There is no structural fix for this within a
    single-plugin design; the targeted Read/Grep verification above is a
@@ -833,14 +923,14 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    verification — they are a second pass by the same model, arbitrated by
    Claude. Elevated assurance's 3 lenses (`references/elevated-assurance.md`)
    reduce single-thread anchoring and add angle diversity, but on that path
-   they are still the same underlying Codex model — do not present N-lens
-   agreement as independent verification either. Every non-Codex backend has
-   the different, already-disclosed same-Claude-model limitation documented
-   in `references/backend-selection.md`.
+   they are still the same underlying model — do not present N-lens
+   agreement as independent verification either. Every Claude-routed backend
+   has the different, already-disclosed same-Claude-model limitation
+   documented in `references/backend-selection.md`.
 
-6. **REFACTOR** (selected backend fixes; Codex by default) —
+6. **REFACTOR** (selected backend fixes; OpenCode by default) —
    ```
-   Agent(subagent_type: "codex:codex-rescue", prompt: "Apply the following
+   Agent(subagent_type: "opencode:opencode-rescue", prompt: "Apply the following
    agreed fixes for the active feature [feature]: [triaged list]. Permitted
    context, extracted and fenced byte-for-byte from that feature's #### Current
    state per context-lifecycle.md:
@@ -859,20 +949,33 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    confinement; follow the same reference for the caveat and composite round
    recording.
 
-   **Backend dispatch.** The invocation and recovery protocol below are the
-   unchanged default `codex` path. For `claude`,
-   `claude:<account-alias>`, or `claude-writer:<account-alias>`, dispatch the
+   **Backend dispatch.** The invocation above is the unchanged default
+   `opencode` path. For `codex`, `claude`, `claude:<account-alias>`, or
+   `claude-writer:<account-alias>`, dispatch the
    selected writer and carry forward triage continuity exactly as
    `references/backend-selection.md` specifies; do not inline alternate prompt
    families here. The selected writer applies
    only the agreed fixes, and every backend returns to node 3 before another
    CRITIQUE.
 
-   A Codex session created read-only may not upgrade to write access through
-   `--resume-last --write`. If the sandbox rejects that transition, confirm
-   that no changes landed, then start a **fresh, non-resumed session with
-   `--write` from the beginning**. Do not keep retrying the read-only resume.
-   The observed failure mode was a sandbox-permission rejection.
+   **OpenCode (default) recovery note.** OpenCode's CRITIQUE calls have no
+   enforced read-only sandbox (see node 4), so there is no Codex-style
+   "sandbox rejects the write-access upgrade" failure mode to recover from on
+   this path — `--resume-last --write` targets whatever session the companion
+   script's recency-based resolution picks, and the risk is a misroute
+   (resuming the wrong feature's thread), not a permission rejection. Apply
+   the same before/after snapshot discipline as the artifact-identity digest
+   in `references/backend-selection.md` around every resumed REFACTOR call
+   regardless, since a misroute can still leave an unexpected diff. If the
+   resumed session's own memory concerns a different feature (per the prompt
+   instruction above), stop and report rather than proceeding or guessing.
+
+   **`backend: codex` recovery note.** A Codex session created read-only may
+   not upgrade to write access through `--resume-last --write`. If the
+   sandbox rejects that transition, confirm that no changes landed, then
+   start a **fresh, non-resumed session with `--write` from the beginning**.
+   Do not keep retrying the read-only resume. The observed failure mode was a
+   sandbox-permission rejection, specific to Codex's enforced sandbox.
 
    `git diff --check` only detects whitespace/conflict-marker errors — it
    does not prove the tree is unchanged, and a rejected write can still leave
@@ -899,18 +1002,19 @@ first CRITIQUE, which precedes any IMPL or REFACTOR write.
    made specifically to fix a QUALITY GATE failure remains in the same
    activation and shares its existing counter.
 
-   **Elevated assurance continuity.** On the default `codex` path, after node
-   4's canonicalization call or after the exit challenger runs, that call
-   becomes the new latest/canonical thread. If a REFACTOR follows either of
-   those without an intervening ordinary `--resume-last` CRITIQUE round, build
-   the same kind of concise inline continuity summary described above for the
-   fresh-fallback case — the canonical/exit thread did not see every prior
-   lens finding — and include it in the REFACTOR prompt. `backend: claude` and
+   **Elevated assurance continuity.** On resume-based backends (default
+   `opencode`, or `backend: codex`), after node 4's canonicalization call or
+   after the exit challenger runs, that call becomes the new latest/canonical
+   thread. If a REFACTOR follows either of those without an intervening
+   ordinary `--resume-last` CRITIQUE round, build the same kind of concise
+   inline continuity summary described above for the fresh-fallback case —
+   the canonical/exit thread did not see every prior lens finding — and
+   include it in the REFACTOR prompt. `backend: claude` and
    `claude-writer:<account-alias>` instead use 3 parallel fresh `Explore`
    lenses and Claude's own canonicalization, with no separate canonicalization
-   call, canonical thread, `--resume-last`, or Codex-call budget consumed;
-   follow `references/backend-selection.md` rather than applying this Codex
-   continuity paragraph to those backends.
+   call, canonical thread, `--resume-last`, or resume-based-backend-call
+   budget consumed; follow `references/backend-selection.md` rather than
+   applying this resume-based-backend continuity paragraph to those backends.
 
 7. **VERIFY** (Claude, judgment required) — Run functional tests and evaluate
    the acceptance criteria only after DEBATE has no valid findings awaiting
@@ -955,8 +1059,9 @@ match — **and** no net code change addressed it in between. When that
 happens, **stop and escalate to the user** instead of continuing to iterate.
 Never fabricate a false resolution just to exit the loop.
 
-On the default `codex` path, CRITIQUE is stateful via `--resume-last` (see
-node 4), so Codex itself should rarely repeat a finding it already discussed
+On resume-based backends (default `opencode`, or `backend: codex`), CRITIQUE
+is stateful via `--resume-last` (see
+node 4), so the reviewer itself should rarely repeat a finding it already discussed
 — but "rarely" is not "never." `backend: claude` and
 `claude-writer:<account-alias>` instead use fresh `Explore` reviewers with
 Claude-maintained continuity and no `--resume-last`;
@@ -966,13 +1071,15 @@ not assumed away.
 
 **Elevated-assurance pass accounting.** A CRITIQUE pass is one completed
 traversal of node 4 that produces one normalized finding set for node 5. On
-the default `codex` path, the initial 3 fresh lens calls, Claude's fan-in, and
+resume-based backends (default `opencode`, or `backend: codex`), the initial
+3 fresh lens calls, Claude's fan-in, and
 the fresh canonicalization call together count as **one** CRITIQUE pass, not
 four. Each later resumed canonical review counts as one pass, and each fresh
 exit challenger pass counts as one additional CRITIQUE pass — there may be
 more than one if an exit challenger's own findings go through REFACTOR and
 require a re-run (see `references/elevated-assurance.md`). Separately from
-pass accounting on that path, every Codex task invocation — each lens,
+pass accounting on that path, every task invocation to the resume-based
+backend — each lens,
 canonicalization, resumed review, exit challenger, and DEBATE reinjection —
 consumes one unit of the persisted elevated-assurance model-call budget (see
 `references/elevated-assurance.md` for the derived floor and the adjustable
@@ -984,7 +1091,7 @@ For `backend: claude` and `claude-writer:<account-alias>`, the 3 parallel fresh
 count as the initial CRITIQUE pass. Each later fresh `Explore` review and each
 fresh exit challenger counts as one additional pass. Those backends have no
 separate canonicalization call, canonical thread, `--resume-last`, or
-persisted Codex model-call budget, and consume no Codex budget; follow
+persisted resume-based-backend model-call budget, and consume no such budget; follow
 `references/backend-selection.md` for their continuity and self-
 canonicalization protocol. Under any compatible backend, DEBATE reinjections
 stay inside node 5 and do not create CRITIQUE passes. Apply the two-pass
@@ -1024,14 +1131,33 @@ variant).
 ## Risks
 
 - **Writer edits are destructive**: the selected writer edits files directly;
-  on the default `codex` path, that authority is requested with `--write`.
+  on the default `opencode` path, that authority is requested with `--write`.
   Always run on a branch with a clean working tree, never on `main` with
   uncommitted changes.
-- Codex's own cost is billed through the user's OpenAI account, not Claude
-  tokens — this skill saves Claude's context/tokens, not total cost.
-- A read-only Codex session may reject a resumed write request; recover with a
-  fresh session that has `--write` from the start, as described under
-  REFACTOR.
+- **CRITIQUE's read-only guarantee is prompt-only on the default path.**
+  Unlike Codex's OS/process-enforced read-only sandbox, `opencode`'s CRITIQUE
+  calls rely entirely on the "read-only, do not fix anything" prompt
+  instruction — nothing blocks a misbehaving or confused call from writing to
+  the tree. This is the central trade-off of making OpenCode the default
+  instead of Codex (see node 4); prefer `backend: codex` when this boundary
+  matters more than the OpenCode default's provider flexibility.
+- **`opencode-plugin-cc` is a community plugin, not an official one.** Unlike
+  the Codex plugin (owned and shipped by OpenAI's own GitHub org),
+  `tasict/opencode-plugin-cc` is third-party tooling modeled on
+  `codex-plugin-cc`'s design but not audited or endorsed by Anthropic, OpenAI,
+  or the OpenCode project. See `references/sources.md` for what has and has
+  not been independently verified about it.
+- OpenCode's own cost is billed through however the configured AI provider is
+  paid (OpenAI, Anthropic, Google, etc., via `opencode providers login`), not
+  Claude tokens — this skill saves Claude's context/tokens, not total cost.
+  The same applies to `backend: codex`, billed through the user's OpenAI
+  account.
+- A read-only resume-based session (OpenCode by default, or `backend: codex`)
+  may fail to pick up a write request on `--resume-last --write`; recover
+  with a fresh session that has `--write` from the start, as described under
+  REFACTOR — the exact failure mode differs by backend (a sandbox rejection
+  on `backend: codex`; a plain misroute or stale session on the default
+  `opencode` path, since there is no sandbox to reject anything).
 - `PROJECT_CONTEXT.md` and its narrowly scoped sibling archive
   `PROJECT_CONTEXT.archive/` are per-repo, not global; never write to the
   user's global Claude Code instructions file.
@@ -1041,22 +1167,24 @@ variant).
   a restore point to revert to if a later round goes wrong, not as evidence
   the feature is done; a real run that tagged an intermediate round
   `COMPLETE` needed five more REFACTOR rounds after it.
-- On the default `codex` path, elevated assurance
+- On resume-based backends (default `opencode`, or `backend: codex`),
+  elevated assurance
   (`references/elevated-assurance.md`) is opt-in and its call floors sit far
   above standard mode's (see Selecting a mode). A clean **elevated** run of
-  the full 8-node write cycle costs at least 5 Codex
+  the full 8-node write cycle costs at least 5
   review calls — 3 lenses, canonicalization, and the exit challenger — or 6
-  Codex calls total counting IMPL; clean elevated refactor-only costs 5 total,
+  calls total counting IMPL; clean elevated refactor-only costs 5 total,
   and clean elevated review-only costs 4 total (3 lenses + canonicalization)
   because it has neither IMPL nor an exit challenger. Every number in this
   bullet describes elevated mode alone; the standard floors are 1 to 2. It
   also consumes extra Claude context during fan-in — it
   undercuts the token-savings motivation above if treated as a default rather
   than a risk-triggered exception. On that path, its N lenses share the same
-  underlying Codex model and are not independent verification, and getting
+  underlying model and are not independent verification, and getting
   its fan-in barrier ordering wrong can misdirect `--resume-last` to the wrong
   thread. `backend: claude` and `claude-writer:<account-alias>` have neither
-  that Codex-call floor nor that `--resume-last` fan-in risk; follow
+  that resume-based-backend-call floor nor that `--resume-last` fan-in risk;
+  follow
   `references/backend-selection.md` for their different limitations. Elevated
   assurance must never activate without explicit user authorization on any
   compatible backend.

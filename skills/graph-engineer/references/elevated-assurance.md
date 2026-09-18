@@ -7,6 +7,16 @@ matched risk trigger with concrete evidence. Standard single-thread CRITIQUE
 (the behavior described in `../SKILL.md`) remains what every cycle uses unless
 this reference's activation rule fires and the user agrees.
 
+**Scope note.** This reference's mechanics (fan-in barrier, lens prompts,
+`--resume-last`-by-recency reasoning) were originally written and verified
+against Codex, and now apply on the default `opencode` path too — both are
+resume-based backends with the same `--resume-last`/`--fresh` flag shape (see
+`../SKILL.md`'s Prerequisite section and `backend-selection.md`'s `opencode`
+subsection). Where an example below shows `codex:codex-rescue`, substitute
+`opencode:opencode-rescue` on the default path; the surrounding mechanics are
+identical by design, though OpenCode's version has not received the same
+source-level audit as Codex's — see `sources.md`.
+
 ## Why this exists
 
 Standard CRITIQUE already starts a fresh thread on its first call, so it does
@@ -117,7 +127,7 @@ alongside (not replacing) `### Quality gate`:
 - lens set: standard | correctness-contracts; integration-state-reproducibility; security-abuse-data-loss
 - exit challenger: disabled | required-before-verify-or-done-rerun-until-clean
 - CRITIQUE pass cap: <positive integer; default 3 standard / 5 elevated>
-- Codex review/debate call budget: not-applicable (standard) | <positive integer; default 13 elevated>
+- Resume-based-backend review/debate call budget: not-applicable (standard, or non-resume-based backend) | <positive integer; default 13 elevated>
 ```
 
 Only the final resolution belongs here — this is not a runtime progress log.
@@ -134,8 +144,9 @@ GATE before CRITIQUE resumes (see the amendment in
 
 ### Budgets: what's derived vs. what's a guess
 
-- **The clean elevated call floors are structural, not guesses:** the full
-  8-node write cycle has 5 Codex review calls — 6 Codex calls total counting
+- **The clean elevated call floors are structural, not guesses:** on
+  resume-based backends (default `opencode`, or `backend: codex`), the full
+  8-node write cycle has 5 review calls — 6 calls total counting
   IMPL: 3 lenses + 1 canonicalization + 1 exit challenger are the review
   calls. Clean refactor-only has the same 5-call review/total floor because
   it has no IMPL.
@@ -146,10 +157,11 @@ GATE before CRITIQUE resumes (see the amendment in
   required re-run exit challenger add further calls beyond the applicable
   floor — this is expected, not a budget violation, and is exactly why the
   cap below exists as a real ceiling rather than a formality.
-- **`CRITIQUE pass cap: 5` and `Codex review/debate call budget: 13` are
+- **`CRITIQUE pass cap: 5` and the resume-based-backend `review/debate call
+  budget: 13` are
   template defaults, not derived or benchmarked values.** They exist so an
   autonomous `/goal` run has *some* documented ceiling instead of none —
-  elevated assurance is the mode that multiplies Codex calls, which makes an
+  elevated assurance is the mode that multiplies resume-based-backend calls, which makes an
   unbounded run the worst possible default. Treat them as adjustable
   starting points: raise or lower them explicitly in your `/goal` text.
   Whichever number a user's `/goal` states overrides these defaults; if none
@@ -168,8 +180,10 @@ exact-sentinel validation, forbidden-heading check, byte-exact extraction, and
 dynamic outer-fence rule are mandatory immediately before dispatch; do not
 substitute a blockquote or hand-copied text. Backtick and tilde runs in the
 payload are uninterpreted bytes, not parser state. This is a
-prompt-level disclosure rule, not a sandboxed read boundary: Codex's read-only
-sandbox blocks writes, not reads. The lens does **not** receive the builder's
+prompt-level disclosure rule, not a sandboxed read boundary: on `backend:
+codex`, the read-only
+sandbox blocks writes, not reads; on the default `opencode` path, there is no
+sandbox at all (see `../SKILL.md` node 4). The lens does **not** receive the builder's
 (IMPL's) narrative, and it does not see another lens's output. Each lens may
 report a concrete defect outside its assigned angle — the angle is a
 minimum responsibility, not a blindfold.

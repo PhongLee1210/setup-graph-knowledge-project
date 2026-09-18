@@ -1,20 +1,31 @@
 # graph-engineer
 
 A Claude Code skill for a common problem: by default, you want a second model
-(Codex) to
+(OpenCode) to
 apply the code while Claude preserves context for orchestration and judgment,
-and you don't want Codex grading its own homework without arbitration.
-`graph-engineer` makes Claude the orchestrator and arbiter, and Codex the one
-who writes, adversarially reviews, and fixes the code, running as a
+and you don't want that second model grading its own homework without
+arbitration.
+`graph-engineer` makes Claude the orchestrator and arbiter, and OpenCode the
+one who writes, adversarially reviews, and fixes the code, running as a
 self-correcting loop instead of a single implement-and-hope pass. The split
 isn't only about token cost: it also separates roles and puts a different
-model in the arbitration path.
+model in the arbitration path. Codex remains available as an opt-in backend
+(`backend: codex`) with a stronger guarantee on one specific point — see
+[Requirements](#requirements) and [Backend selection](#backend-selection-optional).
 
-> **Status: adversarially reviewed and dogfooded end-to-end in this repository.**
-> The 8-node cycle and the QUALITY GATE resolver have now been exercised against
+> **Status: the `codex`-default configuration was adversarially reviewed and
+> dogfooded end-to-end in this repository; the `opencode`-default
+> configuration has not been.**
+> The 8-node cycle and the QUALITY GATE resolver were exercised against
 > two real features in this skill's own repository, through repeated REFACTOR
-> rounds and real failure-recovery paths. Real-world validation is still limited
-> to this one repository; see [Limitations / Risks](#limitations--risks) before
+> rounds and real failure-recovery paths — but that dogfooding run predates
+> this skill's default switching from `codex` to `opencode`, and it ran on
+> the `codex` path (also still available via `backend: codex`). The
+> `opencode` default's routing, flag, and continuity assumptions are drawn
+> from the `opencode-plugin-cc` plugin's own README/agent definition, not
+> from an equivalent real end-to-end run or source-level audit. Real-world
+> validation is still limited to this one repository and, for the `codex`
+> path specifically; see [Limitations / Risks](#limitations--risks) before
 > running `--write` against anything you care about.
 
 ## What is "graph engineering"?
@@ -22,8 +33,8 @@ model in the arbitration path.
 Not an official term — no Anthropic or OpenAI product is called that. It's
 useful as a mental model anyway: think of the workflow as a small graph.
 
-- **Nodes** are units of work: Claude writing a spec, Codex implementing,
-  Codex critiquing, Claude triaging.
+- **Nodes** are units of work: Claude writing a spec, OpenCode implementing,
+  OpenCode critiquing, Claude triaging.
 - **Edges** are handoffs between them: spec → implementation → mechanical
   quality gate → critique → triage → fix.
 
@@ -56,21 +67,23 @@ below):
 ```mermaid
 flowchart TD
     PF["0 PRE-FLIGHT<br/>Claude: branch + gate resolution"] --> SPEC["1 SPEC<br/>Claude: contract → PROJECT_CONTEXT.md"]
-    SPEC --> IMPL["2 IMPL<br/>Codex --write"]
+    SPEC --> IMPL["2 IMPL<br/>OpenCode --write"]
     IMPL --> QG{"3 QUALITY GATE<br/>mechanical checks"}
     QG -- "fail (max 3/activation)" --> IMPL
-    QG -- pass --> CRIT["4 CRITIQUE<br/>Codex, read-only"]
+    QG -- pass --> CRIT["4 CRITIQUE<br/>OpenCode, prompt-only read-only"]
     CRIT --> DEBATE{"5 DEBATE<br/>Claude triages"}
-    DEBATE -- valid --> REFACTOR["6 REFACTOR<br/>Codex --resume-last --write"]
-    DEBATE -- "debatable: internal Codex round-trip" --> DEBATE
+    DEBATE -- valid --> REFACTOR["6 REFACTOR<br/>OpenCode --resume-last --write"]
+    DEBATE -- "debatable: internal OpenCode round-trip" --> DEBATE
     REFACTOR --> QG
     DEBATE -- "no findings" --> VERIFY{"7 VERIFY<br/>functional tests"}
     VERIFY -- fail --> CRIT
     VERIFY -- pass --> DONE(["DONE"])
 ```
 
-On the default `codex` path, every node is Claude or Codex, never a third
-agent. Each completed writer iteration's outcome is durably recorded in
+On the default `opencode` path, every node is Claude or OpenCode, never a
+third agent (`backend: codex` swaps OpenCode for Codex, with an enforced
+rather than prompt-only read-only CRITIQUE — see
+[Requirements](#requirements)). Each completed writer iteration's outcome is durably recorded in
 `PROJECT_CONTEXT.md`, so the cycle can resume from that checkpoint after a
 session restart even though within-round continuity relies on `--resume-last`
 session memory — together, those explicit transitions and durable records make
@@ -122,20 +135,22 @@ small sub-loop, invisible in the 8-node diagram above:
 ```
 [5 DEBATE]  finding classified as "debatable"
       ↓
-      On the default codex path, Claude reinjects it to
-      codex:codex-rescue with a counterargument
-      ("Codex flagged X, but Y because Z — do you stand by it or reconsider?"),
+      On resume-based backends (default opencode, or backend: codex),
+      Claude reinjects it to the same entry-point subagent
+      ("The reviewer flagged X, but Y because Z — do you stand by it or reconsider?"),
       always with --resume-last so the thread stays continuous
       ↓
-      Codex replies (still read-only — no --write in this call either)
+      The reviewer replies (still read-only — no --write in this call either;
+      enforced by sandbox only on backend: codex, prompt-only on the default)
       ↓
       Claude decides: valid → refactor, or false positive → discarded
       (with written justification either way)
 ```
 
 This sub-loop happens entirely inside node 5, before anything reaches node
-6 — it's an extra round-trip to Codex per debatable finding, not just a
-triage checkbox. Non-Codex backends use the manual or cross-session continuity
+6 — it's an extra round-trip to the reviewer per debatable finding, not just a
+triage checkbox. `claude`, `claude:<account-alias>`, and
+`claude-writer:<account-alias>` use the manual or cross-session continuity
 mechanism in
 [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md)
 instead.
@@ -184,7 +199,7 @@ which includes the CRITIQUE cap, anti-loop, QUALITY GATE, and environmental
 stop clauses this shortened version omits:**
 ```
 /goal Implement a POST /api/webhooks/verify endpoint in src/routes/webhooks.ts,
-code written and fixed by Codex via graph-engineer. Stop condition: the
+code written and fixed by OpenCode via graph-engineer. Stop condition: the
 endpoint verifies webhook signatures and returns the documented status codes,
 AND no valid findings remain from the adversarial-review. [...full template's
 CRITIQUE cap, anti-loop, QUALITY GATE, and environmental clauses apply too.]
@@ -194,10 +209,10 @@ CRITIQUE cap, anti-loop, QUALITY GATE, and environmental clauses apply too.]
    resolves and persists the feature's mechanical quality gate.
 1. **SPEC** — Claude writes the endpoint's contract (inputs, signature
    verification rule, response codes) to `PROJECT_CONTEXT.md`.
-2. **IMPL** — Codex writes `webhooks.ts` following that contract.
+2. **IMPL** — OpenCode writes `webhooks.ts` following that contract.
 3. **QUALITY GATE** — The resolved local lint/typecheck/build command passes
    over the newly written tree.
-4. **CRITIQUE** — Codex reviews its own code adversarially and reports, say,
+4. **CRITIQUE** — OpenCode reviews its own code adversarially and reports, say,
    two findings: *"the signature comparison uses `===` instead of a
    constant-time compare — timing attack surface"* and *"the handler doesn't
    log request IDs"*.
@@ -206,7 +221,7 @@ CRITIQUE cap, anti-loop, QUALITY GATE, and environmental clauses apply too.]
    refactor. The logging one is judged a **false positive** for this repo (it
    has no logging convention anywhere else) — discarded, with that reason
    written down, not silently dropped.
-6. **REFACTOR** — Codex swaps in a constant-time comparison.
+6. **REFACTOR** — OpenCode swaps in a constant-time comparison.
    - **Mini-loop:** Return to node **3 QUALITY GATE**, then node **4
      CRITIQUE** — both pass this time.
 7. **VERIFY** — Functional tests run green. The terminal archival transition
@@ -227,7 +242,52 @@ implementation files" (it covers local git metadata, never file content).
 
 ## Requirements
 
-The default `codex` backend needs the official OpenAI Codex plugin for Claude
+The default `opencode` backend needs the third-party
+`opencode-plugin-cc` plugin for Claude Code, plus OpenCode itself with a
+configured AI provider:
+**[tasict/opencode-plugin-cc](https://github.com/tasict/opencode-plugin-cc)**.
+
+```
+# 1. Install OpenCode itself (once), if not already present
+npm i -g opencode-ai   # or: brew install opencode
+
+# 2. Install the plugin
+! curl -fsSL https://raw.githubusercontent.com/tasict/opencode-plugin-cc/main/install.sh | bash
+/reload-plugins
+/opencode:setup
+
+# 3. Configure an AI provider for OpenCode, if not already done
+! opencode providers login
+```
+
+`/opencode:setup` should report a ready status. The opt-in `backend: codex`
+route needs the separate official Codex plugin instead (see below); `backend:
+claude`, `backend: claude:<account-alias>`, and
+`backend: claude-writer:<account-alias>` call neither plugin, though all
+backend-resolution and cycle invariants
+still apply. The skill also needs
+[Claude Code](https://claude.com/claude-code) itself — this skill relies on
+the built-in `/goal` command; confirm it's available in your installed
+build, since this repository doesn't currently pin a verified Claude Code
+version.
+
+**Not yet exercised end-to-end against a pinned `opencode-plugin-cc`
+version.** Unlike the `codex` path below, the `opencode` default's routing
+and flag assumptions (`opencode:opencode-rescue` entry point,
+`--write`/`--resume-last`/`--fresh` behavior) are drawn from that plugin's
+README and agent definition as fetched 2026-09-18, not from a real dogfooding
+run or a source-level audit of `opencode-companion.mjs`. In particular, treat
+`--resume-last` as resolving by session recency only (the same limitation
+Codex has) until someone verifies otherwise against the installed plugin's
+own source — see
+[`skills/graph-engineer/references/sources.md`](skills/graph-engineer/references/sources.md).
+**OpenCode's CRITIQUE calls also have no enforced sandbox** — see
+[How it works](#how-it-works) and
+[Limitations / Risks](#limitations--risks).
+
+### Opt-in `backend: codex`
+
+`backend: codex` needs the official OpenAI Codex plugin for Claude
 Code: **[openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)**.
 
 ```
@@ -236,18 +296,11 @@ Code: **[openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)**.
 /codex:setup
 ```
 
-`/codex:setup` should report `Status: ready`. The opt-in `backend: claude`,
-`backend: claude:<account-alias>`, and
-`backend: claude-writer:<account-alias>` routes do not call Codex and therefore
-do not require this plugin, though all backend-resolution and cycle invariants
-still apply. The skill also needs
-[Claude Code](https://claude.com/claude-code) itself — this skill relies on
-the built-in `/goal` command; confirm it's available in your installed
-build, since this repository doesn't currently pin a verified Claude Code
-version.
+`/codex:setup` should report `Status: ready`.
 
 **Exercised end-to-end against `openai-codex` plugin v1.0.6.** This
-repository's real dogfooding run exercised the routing, flag, and sandbox
+repository's real dogfooding run (from when `codex` was still the default)
+exercised the routing, flag, and sandbox
 assumptions (single `codex:codex-rescue` entry point, `--write` /
 `--resume-last` flag behavior, and sandbox enforcement of read-only CRITIQUE
 and exit-challenger calls), including recovery after a resumed `--write`
@@ -278,18 +331,18 @@ afterward (a clean starting point is what makes that comparison meaningful).
 
 ## Choosing a mode
 
-There are three entry paths. On the default `codex` backend, the cheapest costs
-a single Codex call and is a complete answer for most review work, so pick
-deliberately rather than defaulting to the full cycle.
+There are three entry paths. On the default `opencode` backend, the cheapest
+costs a single OpenCode call and is a complete answer for most review work,
+so pick deliberately rather than defaulting to the full cycle.
 
 Both columns are derived, not measured. **Floor** is a run where CRITIQUE
 finds nothing. **One-fix round** is a run where one finding is accepted,
 fixed, and re-reviewed once — the smallest run that actually does something.
 Real runs with several findings cost more.
 
-| Mode | Path | Standard Codex calls (floor / one-fix round) | Use when |
+| Mode | Path | Standard backend calls (floor / one-fix round) | Use when |
 |---|---|---|---|
-| **Review-only** | PRE-FLIGHT → CRITIQUE → DEBATE/report → DONE | 1 / 1 | You want an adversarial read of existing code. Authorizes no writes; only the default Codex path enforces that with a sandbox. |
+| **Review-only** | PRE-FLIGHT → CRITIQUE → DEBATE/report → DONE | 1 / 1 | You want an adversarial read of existing code. Authorizes no writes; only `backend: codex` enforces that with a sandbox — the default `opencode` path enforces it only as a prompt convention. |
 | **Refactor-only** | PRE-FLIGHT → CRITIQUE → DEBATE → REFACTOR → QUALITY GATE → CRITIQUE → … → DONE | 1 / 3 | Existing code needs fixing, with no new feature contract involved. |
 | **Full 8-node write cycle** | PRE-FLIGHT → SPEC → IMPL → … → VERIFY | 2 / 4 | New functionality that needs a contract written before the code exists. |
 
@@ -297,9 +350,10 @@ Review-only is 1 in both columns because it never refactors — it reports and
 stops. The other two reach their one-fix number by adding REFACTOR plus the
 re-review CRITIQUE after it.
 
-On the default `codex` backend, only IMPL, CRITIQUE, and REFACTOR are Codex
-calls; the other nodes are Claude.
-QUALITY GATE reaches Codex only when a mechanical check fails, and DEBATE only
+On the default `opencode` backend, only IMPL, CRITIQUE, and REFACTOR are
+OpenCode calls; the other nodes are Claude.
+QUALITY GATE reaches the writer backend only when a mechanical check fails,
+and DEBATE only
 when a "debatable" finding is reinjected (see the
 [sub-loop](#the-cycle-8-nodes) above). [Elevated
 assurance](#elevated-assurance-optional) expands node 4 and adds
@@ -308,7 +362,7 @@ own, much higher floors.
 
 Both write-authorized paths start at PRE-FLIGHT for a reason: that's where the
 clean-tree and non-`main` branch checks happen. Refactor-only does not begin
-by calling Codex.
+by calling the writer backend.
 
 **When not to authorize a write cycle.** The question is blast radius, not
 whether a change is "structural" or "cosmetic". A change that alters no
@@ -321,8 +375,10 @@ that wrong propagates silently.
 ### Backend selection (optional)
 
 IMPL, CRITIQUE, and REFACTOR can select one backend per cycle with
-`backend: codex`, `backend: claude`, `backend: claude:<account-alias>`, or
-`backend: claude-writer:<account-alias>`; omission keeps `codex` as the default.
+`backend: opencode`, `backend: codex`, `backend: claude`,
+`backend: claude:<account-alias>`, or
+`backend: claude-writer:<account-alias>`; omission keeps `opencode` as the
+default.
 `claude-writer:<account-alias>` is available only for the full 8-node write
 cycle and refactor-only, not review-only.
 Any Claude backend gives up the cross-model diversity that the default path
@@ -331,7 +387,11 @@ weakest writer/reviewer isolation because the same retained session remembers
 authoring the code it reviews. `claude-writer:<account-alias>` instead keeps
 the same fresh local `Explore` reviewer as `backend: claude`, improving on the
 retained session's self-review but only moving the writer's token cost to the
-named second account — it does not add independent review.
+named second account — it does not add independent review. `backend: codex`
+is the one exception to "opting out of the default loses a guarantee": it
+*adds* an OS/process-enforced read-only sandbox on CRITIQUE that the default
+`opencode` path does not have, at the cost of a separate paid Codex
+account/plugin.
 
 See the complete
 [`backend-selection.md` protocol](skills/graph-engineer/references/backend-selection.md)
@@ -341,7 +401,8 @@ workspace-identity limitations, and out-of-scope behavior.
 
 ## Usage
 
-The default-`codex`, write-authorized template linked below lets Codex edit
+The default-`opencode`, write-authorized template linked below lets OpenCode
+edit
 files. For a review-only audit that authorizes no edits, use the dedicated
 review-only template in
 [`skills/graph-engineer/references/goal-templates.md`](skills/graph-engineer/references/goal-templates.md)
@@ -352,7 +413,8 @@ running read-only — it's a separate terminal path
 QUALITY GATE, REFACTOR, and VERIFY. It reviews the scope you name directly
 and doesn't require a `PROJECT_CONTEXT.md` contract to exist. Review-only
 rejects `claude-writer:<account-alias>` at PRE-FLIGHT because that mode has no
-writer role. For the accepted non-Codex backends, “authorizes no edits” is not
+writer role. For every backend other than `backend: codex` — including the
+default `opencode` path — “authorizes no edits” is not
 an absolute sandbox guarantee; follow
 the mutation-detection and prompt-only/tool-list caveats in
 [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md).
@@ -366,7 +428,7 @@ elevated-assurance escalation clauses, anti-loop cutoff, and environmental
 preconditions. Keeping the copyable prompt in one reference prevents these
 safety clauses from drifting independently.
 
-Prefer to review the contract before Codex is authorized to write anything?
+Prefer to review the contract before OpenCode is authorized to write anything?
 Use the **two-message mode** instead — send a prepare-only request, review
 the SPEC node's contract, then lock in the `/goal`. Full text for both
 messages is in
@@ -380,7 +442,7 @@ elevated-assurance variants) are all in
 
 Standard single-thread CRITIQUE (used everywhere above) is the default for
 every mode. Elevated assurance is an opt-in variant of node 4: instead of the
-default `codex` path's one Codex critique thread, 3 independent fresh-thread lenses
+default `opencode` path's (or `backend: codex`'s) one critique thread, 3 independent fresh-thread lenses
 (correctness/contracts, integration/state/reproducibility,
 security/abuse/data-loss) review the implementation in parallel, Claude fans
 in and normalizes their findings, and a fresh "exit challenger" pass reviews
@@ -390,12 +452,14 @@ trigger (auth/crypto/payments/migrations, irreversible operations,
 concurrency, public contract changes, a large diff, or a skipped QUALITY
 GATE).
 
-The diagram and Codex-call counts below describe the default `codex` path.
+The diagram and call counts below describe resume-based backends (default
+`opencode`, or `backend: codex`).
 With a confirmed `backend: claude` or
 `backend: claude-writer:<account-alias>`, elevated assurance instead follows
 [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md):
 3 parallel fresh `Explore` lenses and Claude's own canonicalization, with no
-separate canonicalization call, canonical thread, `--resume-last`, or Codex
+separate canonicalization call, canonical thread, `--resume-last`, or
+resume-based-backend
 budget consumed. `claude-writer:<account-alias>` applies here only to the full
 8-node write cycle and refactor-only, not review-only. The
 `claude:<account-alias>` backend cannot run elevated assurance.
@@ -426,8 +490,8 @@ stands at that point. Only the *last* pass's "no valid findings" clears the
 gate into VERIFY (or DONE in refactor-only, which has no VERIFY node).
 
 It costs more than standard CRITIQUE: a clean run of the full 8-node write
-cycle has 5 Codex review calls (3 lenses + canonicalization + exit challenger)
-— 6 Codex calls total, counting IMPL. Clean refactor-only has 5 total; clean
+cycle has 5 review calls (3 lenses + canonicalization + exit challenger)
+— 6 calls total, counting IMPL. Clean refactor-only has 5 total; clean
 review-only has 4 total (3 lenses + canonicalization) because it has neither
 IMPL nor an exit challenger. It also consumes Claude context during fan-in.
 For the risks that come with it — it is not independent verification, and
@@ -441,16 +505,17 @@ and the ready-to-paste `/goal` templates:
 
 ## Why
 
-The role and cost claims below describe the default `codex` path. Opting into a
+The role and cost claims below describe the default `opencode` path. Opting
+into `backend: codex` or a
 Claude backend replaces those actors and carries the trade-offs disclosed in
 [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md).
 
 1. **Intended token and context savings.** This split is designed to keep
    Claude's context focused on the contract, orchestration, and judgment
-   while Codex carries the implementation-heavy work — not independently
+   while OpenCode carries the implementation-heavy work — not independently
    benchmarked yet. "Cheap" is relative, not free: repeated loops still
-   accumulate findings and triage context. Nor does the design mean "Codex
-   always implements only because it costs fewer Claude tokens": Codex is
+   accumulate findings and triage context. Nor does the design mean "OpenCode
+   always implements only because it costs fewer Claude tokens": OpenCode is
    also routed to implementation because applying code is a role it
    performs well, independent of cost.
 2. **Less correlated self-review failure (intended).** Reflection improves
@@ -459,12 +524,12 @@ Claude backend replaces those actors and carries the trade-offs disclosed in
    [Agentic Design Patterns — Reflection](https://www.deeplearning.ai/the-batch/agentic-design-patterns-part-2-reflection/)
    (that source backs the general reflection pattern, not a specific claim
    about same-model self-preference bias). Claude's DEBATE arbitration adds
-   a different model to the decision path instead of letting Codex apply
+   a different model to the decision path instead of letting OpenCode apply
    every self-critique automatically. This is meant to mitigate, not
    eliminate, the risk of correlated blind spots: IMPL and CRITIQUE still
-   use the same underlying Codex model.
-3. **Specialization by role.** Codex writes and mechanically repairs code;
-   Codex's adversarial pass challenges it; Claude owns the contract, checks
+   use the same underlying OpenCode-routed model.
+3. **Specialization by role.** OpenCode writes and mechanically repairs code;
+   its adversarial pass challenges it; Claude owns the contract, checks
    evidence, and arbitrates disputed findings. Each role gets a narrower,
    explicit responsibility instead of one model silently switching between
    author, reviewer, and judge.
@@ -478,7 +543,8 @@ added cost, which is why it's risk-triggered rather than default.
 
 ## How it works
 
-This table describes the default `codex` path; the Claude substitutions are
+This table describes the default `opencode` path; the `codex` and Claude
+substitutions are
 defined in
 [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md).
 
@@ -486,21 +552,29 @@ defined in
 |---|---|---|
 | Orchestrator | User + Claude Code session | — |
 | Loop driver | `/goal <condition>` | built-in; `/goal clear` to reset |
-| Worker (implements) | subagent `codex:codex-rescue` | `Agent` tool, `--write` |
+| Worker (implements) | subagent `opencode:opencode-rescue` | `Agent` tool, `--write` |
 | Mechanical gate | project-local resolved command | local shell, cached per feature |
-| Evaluator (critiques) | same subagent, read-only | `Agent` tool, no `--write`, adversarial prompt |
+| Evaluator (critiques) | same subagent, no `--write` — **prompt-only, not sandbox-enforced** | `Agent` tool, no `--write`, adversarial prompt |
 | Fixer | same subagent, resumed | `Agent` tool, `--resume-last --write` |
-| *Elevated lens sweep (opt-in)* | 3× same subagent, fresh, read-only | `Agent` tool ×3, no `--write`, `--fresh --wait`, in foreground |
-| *Elevated canonical critic (opt-in)* | same subagent, fresh then resumed | `Agent` tool, `--fresh --wait` once, then `--resume-last` |
-| *Elevated exit challenger (opt-in)* | same subagent, fresh, read-only, rerun until clean | `Agent` tool, no `--write`, `--fresh --wait`, gates VERIFY/DONE — reruns fresh after any REFACTOR it triggers |
+| *Elevated lens sweep (opt-in)* | 3× same subagent, fresh, no `--write` | `Agent` tool ×3, no `--write`, `--fresh`, in foreground |
+| *Elevated canonical critic (opt-in)* | same subagent, fresh then resumed | `Agent` tool, `--fresh` once, then `--resume-last` |
+| *Elevated exit challenger (opt-in)* | same subagent, fresh, no `--write`, rerun until clean | `Agent` tool, no `--write`, `--fresh`, gates VERIFY/DONE — reruns fresh after any REFACTOR it triggers |
 
-Every Codex interaction goes through the single `codex:codex-rescue`
+Every OpenCode interaction goes through the single `opencode:opencode-rescue`
 subagent — it's the only command in the plugin invocable directly by the
-model (`/codex:review`, `/codex:adversarial-review`, `/codex:status`,
-`/codex:result`, and `/codex:cancel` are typed-by-human-only). If you prefer
+model (`/opencode:review`, `/opencode:adversarial-review`, `/opencode:status`,
+`/opencode:result`, and `/opencode:cancel` are typed-by-human-only). If you
+prefer
 to run a review by hand instead of through the cycle, you can still type
-`/codex:adversarial-review` yourself — it's just not what this skill
+`/opencode:adversarial-review` yourself — it's just not what this skill
 automates.
+
+`backend: codex` uses the identical shape through `codex:codex-rescue`
+instead, with one material difference: its CRITIQUE row is genuinely
+sandbox-enforced (`sandbox: read-only` at the OS/process level when `--write`
+is omitted), not prompt-only. See
+[Limitations / Risks](#limitations--risks) for why that distinction is the
+central trade-off of this skill's default backend choice.
 
 ## Limitations / Risks
 
@@ -514,32 +588,63 @@ below). The rest of this section is where the concrete risks and unverified
 claims live.
 
 - **Writer edits are destructive.** The selected writer edits files directly;
-  on the default `codex` path, Codex receives that authority through `--write`.
+  on the default `opencode` path, OpenCode receives that authority through
+  `--write`.
   Always run on a branch with a clean working tree, never on `main` with
   uncommitted changes.
-- **Codex's cost is separate from Claude's.** This skill is designed to
+- **CRITIQUE's read-only guarantee is prompt-only on the default path — this
+  is the central trade-off of this skill's default backend choice.** Codex's
+  CRITIQUE calls are blocked from writing at the OS/process level by an
+  actual sandbox (`sandbox: read-only`); OpenCode's are not. OpenCode's
+  `/opencode:review`, `/opencode:adversarial-review`, and the
+  `opencode:opencode-rescue` subagent invoked without `--write` rely entirely
+  on the "read-only, do not fix anything" prompt instruction — nothing stops
+  a misbehaving or confused call from writing to the tree. Prefer
+  `backend: codex` for any cycle where a hard write-prevention boundary
+  matters more than the default's provider flexibility and simpler
+  single-plugin setup.
+- **`opencode-plugin-cc` is a community plugin, not an official one.** The
+  Codex plugin ships from OpenAI's own GitHub org; `tasict/opencode-plugin-cc`
+  is third-party tooling modeled on its design, not audited or endorsed by
+  Anthropic, OpenAI, or the OpenCode project. See
+  [`sources.md`](skills/graph-engineer/references/sources.md) for what has and
+  hasn't been independently verified about it.
+- **OpenCode's and Codex's costs are both separate from Claude's.** This
+  skill is designed to
   reduce Claude's context/token usage (not independently benchmarked, see
-  [Why](#why)); Codex calls are billed through your own OpenAI account.
-- **The overhead isn't in "calling a CLI binary."** Source-inspected in the
+  [Why](#why)); OpenCode calls are billed through whichever AI provider you
+  configured for it (`opencode providers login`), and `backend: codex` calls
+  are billed through your own OpenAI account.
+- **The overhead isn't in "calling a CLI binary."** For `backend: codex`,
+  source-inspected in the
   pinned `openai-codex` v1.0.6 plugin: the underlying process is
   `spawn("codex", ["app-server"])` (`scripts/lib/app-server.mjs`) — a
   long-lived JSON-RPC server, not a fresh CLI exec per review. `"review"` is
   an internal job-class label used against that server, not a CLI argument.
-  The real cost is **one full Codex turn per Codex node** (context, model
+  For the default `opencode` path, `opencode-plugin-cc` instead talks to
+  `opencode serve` over HTTP + SSE (per its own README), also not a fresh CLI
+  exec per call — unverified beyond that README description, not source-
+  inspected the way the Codex path was. Either way, the real cost is
+  **one full model turn per writer/reviewer node** (context, model
   reasoning) — IMPL, CRITIQUE, and REFACTOR, not all 8 nodes, since the other
   five run on Claude (see [Choosing a mode](#choosing-a-mode)) — multiplied
   across however many times the loop revisits them and, if elevated assurance
   is on, the extra lens/canonicalization/exit-challenger calls on top. That's
   where the expense actually is, not in process startup.
-- **A read-only Codex session may stay read-only when resumed.** A session
+- **A read-only resume-based session may not pick up a write request when
+  resumed.** On `backend: codex`, a session
   created without write access has been observed rejecting a later
-  `--resume-last --write` attempt at the sandbox boundary. Recovery is to
+  `--resume-last --write` attempt at the sandbox boundary. On the default
+  `opencode` path, there is no such sandbox to reject anything — the risk
+  instead is a `--resume-last` misroute to a stale or unrelated session (see
+  [Requirements](#requirements)). Either way, recovery is to
   compare a before/after snapshot (untracked-file status, tracked diff, and
   content hashes — `git diff --check` alone doesn't prove nothing changed)
-  and, only if they match, start a fresh, non-resumed Codex session with
+  and, only if they match, start a fresh, non-resumed session with
   `--write` from the beginning instead of retrying the resume.
 - **Same-model review is not independent verification.** On the default
-  `codex` path, IMPL and CRITIQUE both use Codex, so they can share blind spots
+  `opencode` path (and identically on `backend: codex`), IMPL and CRITIQUE
+  both use the same backend, so they can share blind spots
   and self-preference bias. Claude's evidence-based DEBATE is a mitigation,
   not a proof of correctness. Claude backends have their own same-model
   limitation documented in
@@ -595,8 +700,10 @@ claims live.
   QUALITY GATE only proves lint/type/build passed, not that CRITIQUE or
   VERIFY signed off — a real run once tagged an intermediate round
   `COMPLETE` and needed five more REFACTOR rounds after it.
-- **Elevated assurance is not independent verification.** On the default
-  `codex` path, its 3 lenses share the same underlying Codex model as standard
+- **Elevated assurance is not independent verification.** On resume-based
+  backends (default
+  `opencode`, or `backend: codex`), its 3 lenses share the same underlying
+  model as standard
   CRITIQUE, so what they add is angle diversity plus reduced single-thread
   anchoring — not a second opinion from a different model. A clean
   **elevated** run of the full 8-node write cycle costs 5 review calls (3
@@ -607,32 +714,37 @@ claims live.
   [Elevated assurance](#elevated-assurance-optional)) would undercut the
   token-savings motivation in [Why](#why) if it were ever treated as a
   default instead of a risk-triggered exception, which is why it isn't one.
-  On that path, getting the fan-in barrier ordering wrong can misdirect
+  On resume-based backends, getting the fan-in barrier ordering wrong can misdirect
   `--resume-last` to a stray lens thread instead of the intended canonical one
   — see
   [`elevated-assurance.md`](skills/graph-engineer/references/elevated-assurance.md)
   for why that barrier exists and is not optional. `backend: claude` and
-  `backend: claude-writer:<account-alias>` have neither those Codex-call floors
+  `backend: claude-writer:<account-alias>` have neither those resume-based-backend-call floors
   nor that `--resume-last` risk; their distinct limitations are documented in
   [`backend-selection.md`](skills/graph-engineer/references/backend-selection.md).
   Elevated assurance must never activate without your explicit authorization
   on any compatible backend.
 - **Running the reviewer headless can look hung instead of failed.**
-  User-reported, not verified by this project: if the target isn't a git
+  User-reported for `backend: codex`, not verified by this project: if the
+  target isn't a git
   repo, or the review process is run with stdin attached to a terminal, the
   Codex call may sit waiting on input instead of failing fast — reported
   fixes are closing stdin (`< /dev/null`) and passing `--skip-git-repo-check`
   when the target genuinely isn't a repo. Worth trying if a cycle appears
-  stuck rather than erroring out.
+  stuck rather than erroring out. Not yet checked for the default `opencode`
+  path's equivalent headless behavior.
 
 ## Feedback / bug reports
 
 Open an issue at
 [github.com/Ranteck/graph-engineer/issues](https://github.com/Ranteck/graph-engineer/issues).
-Please include: your Claude Code version, the `openai-codex` plugin
-version, the ecosystem/language of the target repo, the QUALITY GATE
+Please include: your Claude Code version, the backend in use (`opencode`,
+`codex`, or a Claude variant) and its plugin version
+(`opencode-plugin-cc` or `openai-codex`), the ecosystem/language of the target
+repo, the QUALITY GATE
 command that got resolved (from `PROJECT_CONTEXT.md`), and sanitized
-output — this skill has not been dogfooded across ecosystems yet, so
+output — this skill has not been dogfooded across ecosystems yet, and the
+`opencode` default in particular has not been dogfooded at all yet, so
 real-world reports are the fastest way to close that gap.
 
 ## License

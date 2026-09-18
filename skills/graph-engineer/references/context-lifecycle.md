@@ -228,10 +228,13 @@ grammar before resolution.
 These are instruction-based disclosure defaults. Resolve the active feature
 heading first by exact match to `## <feature-name>`, then instruct each actor
 not to read or write another feature's section. They are **not sandbox-enforced
-read boundaries**: the default Codex
-sandbox blocks writes during CRITIQUE, not reads, and Claude `Explore`
+read boundaries**: the opt-in `backend: codex`
+sandbox blocks writes during CRITIQUE, not reads; the default `opencode`
+backend has no such sandbox at all (see `SKILL.md` node 4); and Claude
+`Explore`
 reviewers retain shell access despite lacking direct editor tools. A
-dispatched actor can still read other content or, on a non-Codex route,
+dispatched actor can still read other content or, on any route other than
+`backend: codex`,
 indirectly mutate it. The artifact-identity checks in `backend-selection.md`
 detect some drift but do not turn this disclosure policy into confinement.
 
@@ -303,7 +306,8 @@ read `#### Round log`; do not merely tell the actor to read a subsection from
 the file. Prompt templates use `[raw Current state bytes extracted and fenced
 per context-lifecycle.md]` as shorthand for this entire algorithm, never for a
 blockquote or hand-copied paraphrase. This reduces accidental discovery but
-does not enforce a read boundary. On the default Codex path, resumed review
+does not enforce a read boundary. On resume-based backends (default
+`opencode`, or `backend: codex`), resumed review
 relies on `--resume-last`; do not reconstruct continuity by disclosing the
 round log.
 
